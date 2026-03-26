@@ -8,6 +8,7 @@ import androidx.lifecycle.LiveData
 import androidx.lifecycle.MutableLiveData
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.viewModelScope
+import com.bookreader.app.UserPreferences
 import com.bookreader.app.ai.ApiKeyManager
 import com.bookreader.app.ai.ClaudeTextProcessor
 import com.bookreader.app.ai.NeuralTtsService
@@ -35,8 +36,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _isPaused = MutableLiveData(false)
     val isPaused: LiveData<Boolean> = _isPaused
 
-    private val _isListening = MutableLiveData(false)
-    val isListening: LiveData<Boolean> = _isListening
+    private val _listeningMode = MutableLiveData(VoiceCommandManager.ListeningMode.IDLE)
+    val listeningMode: LiveData<VoiceCommandManager.ListeningMode> = _listeningMode
 
     private val _canCapture = MutableLiveData(true)
     val canCapture: LiveData<Boolean> = _canCapture
@@ -51,6 +52,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     // AI components
     val apiKeyManager = ApiKeyManager(application)
+    val userPreferences = UserPreferences(application)
     private val claudeProcessor = ClaudeTextProcessor(apiKeyManager)
 
     // NeuralTtsService wraps both OpenAI TTS and Android TTS fallback
@@ -69,6 +71,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         ttsService = NeuralTtsService(
             context = getApplication(),
             apiKeyManager = apiKeyManager,
+            voiceProvider = { userPreferences.ttsVoice },
             onSentenceStarted = { index, _ ->
                 stateManager.lastSentenceIndex = index
                 currentState = currentState.copy(currentSentenceIndex = index)
@@ -122,7 +125,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         voiceManager = VoiceCommandManager(
             context = getApplication(),
             onCommandRecognized = { command -> handleVoiceCommand(command) },
-            onListeningStateChanged = { listening -> _isListening.postValue(listening) }
+            onListeningModeChanged = { mode -> _listeningMode.postValue(mode) }
         )
         voiceManager?.start()
     }

@@ -6,7 +6,7 @@ import com.bookreader.app.BuildConfig
 
 /**
  * Resolves Anthropic (Claude) and OpenAI API keys.
- * Priority: SharedPreferences (entered via Settings UI) > BuildConfig (from secrets.properties).
+ * Priority: SharedPreferences > BuildConfig (injected from local.properties at build time).
  * Keys are optional — the app degrades gracefully without them.
  */
 class ApiKeyManager(context: Context) {

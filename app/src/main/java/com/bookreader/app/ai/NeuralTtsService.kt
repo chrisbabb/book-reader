@@ -31,6 +31,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 class NeuralTtsService(
     private val context: Context,
     private val apiKeyManager: ApiKeyManager,
+    private val voiceProvider: () -> String = { "nova" },
     private val onSentenceStarted: (sentenceIndex: Int, sentence: String) -> Unit = { _, _ -> },
     private val onSentenceDone: (sentenceIndex: Int) -> Unit = {},
     private val onPageDone: () -> Unit = {},
@@ -297,7 +298,7 @@ class NeuralTtsService(
         val body = JSONObject().apply {
             put("model", "tts-1-hd")
             put("input", text)
-            put("voice", "nova")       // clear, natural female voice
+            put("voice", voiceProvider())
             put("response_format", "mp3")
         }.toString()
 

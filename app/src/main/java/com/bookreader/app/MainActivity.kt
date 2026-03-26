@@ -7,10 +7,13 @@ import android.view.View
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
+import com.bookreader.app.UserPreferences
 import com.bookreader.app.databinding.ActivityMainBinding
 import com.bookreader.app.ui.MainViewModel
+import com.bookreader.app.voice.VoiceCommandManager
 class MainActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityMainBinding
@@ -72,13 +75,48 @@ class MainActivity : AppCompatActivity() {
             binding.pauseResumeButton.text = if (paused) getString(R.string.resume) else getString(R.string.pause)
         }
 
-        viewModel.isListening.observe(this) { listening ->
-            binding.listeningIndicator.visibility = if (listening) View.VISIBLE else View.GONE
+        viewModel.listeningMode.observe(this) { mode ->
+            when (mode) {
+                VoiceCommandManager.ListeningMode.AWAITING_WAKE_WORD -> {
+                    binding.listeningIndicator.visibility = View.VISIBLE
+                    binding.listeningIndicator.text = "Say \"Hey Reader\""
+                    binding.listeningIndicator.alpha = 0.6f
+                }
+                VoiceCommandManager.ListeningMode.AWAITING_COMMAND -> {
+                    binding.listeningIndicator.visibility = View.VISIBLE
+                    binding.listeningIndicator.text = "Listening..."
+                    binding.listeningIndicator.alpha = 1.0f
+                }
+                else -> binding.listeningIndicator.visibility = View.GONE
+            }
+        }
+
+        viewModel.aiStatus.observe(this) { status ->
+            // Show voice button only when OpenAI TTS is active
+            binding.voiceButton.visibility =
+                if (viewModel.apiKeyManager.hasOpenAIKey) View.VISIBLE else View.GONE
         }
 
         viewModel.aiStatus.observe(this) { status ->
             binding.aiStatusText.text = status
         }
+    }
+
+    private fun showVoicePicker() {
+        val voices = UserPreferences.VOICES
+        val labels = voices.map { it.second }.toTypedArray()
+        val currentVoice = viewModel.userPreferences.ttsVoice
+        val checkedIndex = voices.indexOfFirst { it.first == currentVoice }.coerceAtLeast(0)
+
+        AlertDialog.Builder(this)
+            .setTitle("Select Reading Voice")
+            .setSingleChoiceItems(labels, checkedIndex) { dialog, which ->
+                val selected = voices[which].first
+                viewModel.userPreferences.ttsVoice = selected
+                dialog.dismiss()
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
     }
 
     private fun setupClickListeners() {
@@ -92,6 +130,10 @@ class MainActivity : AppCompatActivity() {
 
         binding.stopButton.setOnClickListener {
             viewModel.stopReading()
+        }
+
+        binding.voiceButton.setOnClickListener {
+            showVoicePicker()
         }
     }
 
