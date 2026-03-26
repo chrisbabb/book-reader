@@ -1,0 +1,15 @@
+<resources>
+    <string name="app_name">Book Reader</string>
+    <string name="capture_page">Capture Page</string>
+    <string name="pause">Pause</string>
+    <string name="resume">Resume</string>
+    <string name="stop">Stop</string>
+    <string name="status_ready">Ready. Tap Capture Page or say \'capture\' to scan a page.</string>
+    <string name="status_capturing">Capturing page…</string>
+    <string name="status_processing">Processing image…</string>
+    <string name="status_reading">Reading…</string>
+    <string name="status_paused">Paused</string>
+    <string name="status_listening">Listening for commands…</string>
+    <string name="permission_required">Camera and microphone permissions are required to use this app.</string>
+    <string name="page_label">Page</string>
+</resources>

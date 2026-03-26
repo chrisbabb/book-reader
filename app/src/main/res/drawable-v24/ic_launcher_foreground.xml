@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Book icon -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M54,20 C54,20 30,24 30,54 C30,76 54,88 54,88 C54,88 78,76 78,54 C78,24 54,20 54,20 Z" />
+    <path
+        android:fillColor="#1565C0"
+        android:pathData="M52,22 L52,86 L54,88 L56,86 L56,22 Z" />
+    <path
+        android:fillColor="#1565C0"
+        android:pathData="M36,36 L52,36 L52,40 L36,40 Z" />
+    <path
+        android:fillColor="#1565C0"
+        android:pathData="M36,46 L52,46 L52,50 L36,50 Z" />
+    <path
+        android:fillColor="#1565C0"
+        android:pathData="M56,36 L72,36 L72,40 L56,40 Z" />
+    <path
+        android:fillColor="#1565C0"
+        android:pathData="M56,46 L72,46 L72,50 L56,50 Z" />
+</vector>

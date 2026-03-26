@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="black">#FF000000</color>
+    <color name="white">#FFFFFFFF</color>
+    <color name="primary">#FF1565C0</color>
+    <color name="primary_dark">#FF0D47A1</color>
+    <color name="accent">#FFFFC107</color>
+    <color name="status_bg">#CC000000</color>
+    <color name="capture_btn">#FF2196F3</color>
+    <color name="stop_btn">#FFF44336</color>
+    <color name="pause_btn">#FFFF9800</color>
+</resources>
