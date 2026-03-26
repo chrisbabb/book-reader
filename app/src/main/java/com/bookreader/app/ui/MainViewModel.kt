@@ -6,14 +6,16 @@ import androidx.camera.view.PreviewView
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.LiveData
 import androidx.lifecycle.MutableLiveData
-import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.LifecycleOwner
+import androidx.lifecycle.viewModelScope
+import com.bookreader.app.ai.ApiKeyManager
+import com.bookreader.app.ai.ClaudeTextProcessor
+import com.bookreader.app.ai.NeuralTtsService
 import com.bookreader.app.camera.CameraManager
 import com.bookreader.app.ocr.OCRProcessor
 import com.bookreader.app.state.ReadingState
 import com.bookreader.app.state.ReadingStateManager
 import com.bookreader.app.state.ReadingStatus
-import com.bookreader.app.tts.TextToSpeechManager
 import com.bookreader.app.voice.VoiceCommand
 import com.bookreader.app.voice.VoiceCommandManager
 import kotlinx.coroutines.launch
@@ -39,12 +41,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _canCapture = MutableLiveData(true)
     val canCapture: LiveData<Boolean> = _canCapture
 
+    private val _aiStatus = MutableLiveData("")
+    val aiStatus: LiveData<String> = _aiStatus
+
     // --- Core components ---
     private val cameraManager = CameraManager(application)
     private val ocrProcessor = OCRProcessor()
     private val stateManager = ReadingStateManager(application)
 
-    private var ttsManager: TextToSpeechManager? = null
+    // AI components
+    val apiKeyManager = ApiKeyManager(application)
+    private val claudeProcessor = ClaudeTextProcessor(apiKeyManager)
+
+    // NeuralTtsService wraps both OpenAI TTS and Android TTS fallback
+    private var ttsService: NeuralTtsService? = null
     private var voiceManager: VoiceCommandManager? = null
 
     private var currentState = ReadingState(pageNumber = stateManager.pageNumber)
@@ -56,27 +66,34 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
         _pageNumber.value = stateManager.pageNumber
 
-        // Initialize TTS
-        ttsManager = TextToSpeechManager(
+        ttsService = NeuralTtsService(
             context = getApplication(),
+            apiKeyManager = apiKeyManager,
             onSentenceStarted = { index, _ ->
                 stateManager.lastSentenceIndex = index
                 currentState = currentState.copy(currentSentenceIndex = index)
                 voiceManager?.setTtsSpeaking(true)
             },
             onSentenceDone = { _ ->
-                // sentence index is managed by TTS internally
+                voiceManager?.setTtsSpeaking(false)
             },
             onPageDone = {
                 handlePageDone()
             },
             onReady = {
-                // Start camera after TTS is ready
                 viewModelScope.launch {
                     try {
                         cameraManager.startCamera(lifecycleOwner, previewView)
                         setupVoiceCommands()
-                        ttsManager?.announce(
+
+                        val voiceIndicator = buildString {
+                            if (apiKeyManager.hasClaudeKey) append("Claude OCR ")
+                            if (apiKeyManager.hasOpenAIKey) append("+ OpenAI TTS")
+                            if (isEmpty()) append("On-device mode")
+                        }
+                        _aiStatus.postValue(voiceIndicator)
+
+                        ttsService?.announce(
                             "Book Reader is ready. Point the camera at a book page and tap Capture Page, or say capture."
                         )
                         _statusText.postValue("Ready. Point camera at a page and tap Capture Page.")
@@ -89,6 +106,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         )
 
         _pageNumber.value = stateManager.pageNumber
+    }
+
+    /** Call after returning from SettingsActivity to refresh AI status label. */
+    fun refreshAiStatus() {
+        val label = buildString {
+            if (apiKeyManager.hasClaudeKey) append("Claude OCR ")
+            if (apiKeyManager.hasOpenAIKey) append("+ OpenAI TTS")
+            if (isEmpty()) append("On-device mode")
+        }
+        _aiStatus.postValue(label)
     }
 
     private fun setupVoiceCommands() {
@@ -109,23 +136,37 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
                 val bitmap = cameraManager.capturePhoto()
 
-                updateStatus(ReadingStatus.PROCESSING, "Processing image, please wait…")
+                // Step 1: on-device ML Kit OCR
+                updateStatus(ReadingStatus.PROCESSING, "Reading text from image…")
+                val rawText = ocrProcessor.extractText(bitmap)
 
-                val text = ocrProcessor.extractText(bitmap)
-
-                if (text.isBlank()) {
+                if (rawText.isBlank()) {
                     updateStatus(ReadingStatus.IDLE, "No text detected. Please reposition the camera and try again.")
-                    ttsManager?.announce("No text was detected. Please reposition the camera and try again.")
+                    ttsService?.announce("No text was detected. Please reposition the camera and try again.")
                     _canCapture.postValue(true)
                     return@launch
                 }
 
-                val pageNum = stateManager.pageNumber
+                // Step 2: Claude cleanup (if key available)
+                val (cleanText, detectedPage) = if (apiKeyManager.hasClaudeKey) {
+                    updateStatus(ReadingStatus.PROCESSING, "AI is cleaning up the text…")
+                    val result = claudeProcessor.process(rawText)
+                    Pair(result.cleanText, result.detectedPageNumber)
+                } else {
+                    Pair(rawText, null)
+                }
+
+                // Use Claude's detected page number if available, else use persisted counter
+                val pageNum = detectedPage ?: stateManager.pageNumber
+                if (detectedPage != null && detectedPage != stateManager.pageNumber) {
+                    // Sync counter to what Claude detected
+                    stateManager.pageNumber = detectedPage
+                }
                 _pageNumber.postValue(pageNum)
 
                 currentState = currentState.copy(
                     pageNumber = pageNum,
-                    fullText = text,
+                    fullText = cleanText,
                     status = ReadingStatus.READING,
                     currentSentenceIndex = 0
                 )
@@ -134,19 +175,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 _isReading.postValue(true)
                 _isPaused.postValue(false)
 
-                ttsManager?.loadText(text)
+                ttsService?.loadText(cleanText)
 
                 // Announce page number, then start reading
-                ttsManager?.announce("Page $pageNum.") {
-                    ttsManager?.startReading(0)
+                ttsService?.announce("Page $pageNum.") {
+                    ttsService?.startReading(0)
                 }
 
-                Log.d(TAG, "Started reading page $pageNum, ${text.length} chars")
+                Log.d(TAG, "Page $pageNum: ${cleanText.length} chars, AI=${apiKeyManager.hasClaudeKey}")
 
             } catch (e: Exception) {
                 Log.e(TAG, "Capture/read error", e)
                 updateStatus(ReadingStatus.IDLE, "Error: ${e.message}")
-                ttsManager?.announce("There was an error processing the image. Please try again.")
+                ttsService?.announce("There was an error processing the image. Please try again.")
                 _canCapture.postValue(true)
                 _isReading.postValue(false)
             }
@@ -156,27 +197,24 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun togglePauseResume() {
         val reading = _isReading.value == true
         val paused = _isPaused.value == true
-        if (reading && !paused) {
-            pauseReading()
-        } else if (reading && paused) {
-            resumeReading()
-        }
+        if (reading && !paused) pauseReading()
+        else if (reading && paused) resumeReading()
     }
 
     private fun pauseReading() {
-        ttsManager?.pause()
+        ttsService?.pause()
         _isPaused.postValue(true)
         updateStatus(ReadingStatus.PAUSED, "Paused. Say 'resume' or tap Resume to continue.")
     }
 
     private fun resumeReading() {
-        ttsManager?.resume()
+        ttsService?.resume()
         _isPaused.postValue(false)
         updateStatus(ReadingStatus.READING, "Reading page ${currentState.pageNumber}…")
     }
 
     fun stopReading() {
-        ttsManager?.stop()
+        ttsService?.stop()
         _isReading.postValue(false)
         _isPaused.postValue(false)
         _canCapture.postValue(true)
@@ -192,24 +230,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _isPaused.postValue(false)
         _canCapture.postValue(true)
 
-        // Increment for next page
         stateManager.incrementPage()
         _pageNumber.postValue(stateManager.pageNumber)
 
         if (pagesInSpread >= 2) {
-            // Both pages of the open spread have been read
             stateManager.resetSpread()
             updateStatus(ReadingStatus.WAITING_FOR_CONTINUE,
                 "Both pages read. Please turn the page, then say 'capture' or tap Capture Page.")
-            ttsManager?.announce(
+            ttsService?.announce(
                 "Both pages of this spread are done. Please turn the page. " +
                 "When you're ready, say capture or tap the Capture Page button."
             )
         } else {
-            // One page done, the other side is still visible
             updateStatus(ReadingStatus.WAITING_FOR_CONTINUE,
                 "Page $pageNum done. Say 'continue' or tap Capture Page for the next page.")
-            ttsManager?.announce(
+            ttsService?.announce(
                 "Page $pageNum is done. When you're ready for the next page, say continue or tap Capture Page."
             )
         }
@@ -235,19 +270,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 if (_isReading.value == true || _isPaused.value == true) {
                     _isPaused.postValue(false)
                     _isReading.postValue(true)
-                    ttsManager?.readPreviousSentence()
+                    ttsService?.readPreviousSentence()
                 }
             }
             is VoiceCommand.LastNWords -> {
-                ttsManager?.readLastNWords(command.count)
+                ttsService?.readLastNWords(command.count)
             }
             is VoiceCommand.ReadParagraph -> {
-                ttsManager?.readCurrentParagraph()
+                ttsService?.readCurrentParagraph()
             }
             is VoiceCommand.ReadPage -> {
                 _isReading.postValue(true)
                 _isPaused.postValue(false)
-                ttsManager?.readCurrentPage()
+                ttsService?.readCurrentPage()
                 updateStatus(ReadingStatus.READING, "Re-reading page ${currentState.pageNumber}…")
             }
         }
@@ -260,7 +295,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun cleanup() {
         voiceManager?.stop()
-        ttsManager?.release()
+        ttsService?.release()
         ocrProcessor.release()
         cameraManager.shutdown()
     }

@@ -60,4 +60,7 @@ dependencies {
 
     // Coroutines
     implementation(libs.kotlinx.coroutines.android)
+
+    // HTTP client for Claude and OpenAI APIs
+    implementation(libs.okhttp)
 }

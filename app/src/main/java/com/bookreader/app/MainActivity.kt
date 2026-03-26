@@ -1,6 +1,7 @@
 package com.bookreader.app
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Bundle
 import android.view.View
@@ -11,6 +12,7 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import com.bookreader.app.databinding.ActivityMainBinding
 import com.bookreader.app.ui.MainViewModel
+import com.bookreader.app.ui.SettingsActivity
 
 class MainActivity : AppCompatActivity() {
 
@@ -22,12 +24,18 @@ class MainActivity : AppCompatActivity() {
     ) { permissions ->
         val cameraGranted = permissions[Manifest.permission.CAMERA] == true
         val audioGranted = permissions[Manifest.permission.RECORD_AUDIO] == true
-
         when {
             cameraGranted && audioGranted -> initializeApp()
             !cameraGranted -> showPermissionError("Camera permission is required to scan book pages.")
             !audioGranted -> showPermissionError("Microphone permission is required for voice commands.")
         }
+    }
+
+    private val settingsLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) {
+        // Refresh AI status label after returning from settings
+        viewModel.refreshAiStatus()
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -62,7 +70,6 @@ class MainActivity : AppCompatActivity() {
         }
 
         viewModel.isReading.observe(this) { reading ->
-            binding.captureButton.isEnabled = !reading || viewModel.canCapture.value == true
             binding.pauseResumeButton.isEnabled = reading
             binding.stopButton.isEnabled = reading
         }
@@ -78,6 +85,10 @@ class MainActivity : AppCompatActivity() {
         viewModel.isListening.observe(this) { listening ->
             binding.listeningIndicator.visibility = if (listening) View.VISIBLE else View.GONE
         }
+
+        viewModel.aiStatus.observe(this) { status ->
+            binding.aiStatusText.text = status
+        }
     }
 
     private fun setupClickListeners() {
@@ -91,6 +102,10 @@ class MainActivity : AppCompatActivity() {
 
         binding.stopButton.setOnClickListener {
             viewModel.stopReading()
+        }
+
+        binding.settingsButton.setOnClickListener {
+            settingsLauncher.launch(Intent(this, SettingsActivity::class.java))
         }
     }
 
