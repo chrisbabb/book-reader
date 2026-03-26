@@ -1,6 +1,14 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
+}
+
+// Load secrets.properties if it exists
+val secretsFile = rootProject.file("secrets.properties")
+val secrets = Properties().apply {
+    if (secretsFile.exists()) load(secretsFile.inputStream())
 }
 
 android {
@@ -13,6 +21,17 @@ android {
         targetSdk = 34
         versionCode = 1
         versionName = "1.0"
+
+        buildConfigField(
+            "String",
+            "ANTHROPIC_API_KEY",
+            "\"${secrets.getProperty("ANTHROPIC_API_KEY", "")}\""
+        )
+        buildConfigField(
+            "String",
+            "OPENAI_API_KEY",
+            "\"${secrets.getProperty("OPENAI_API_KEY", "")}\""
+        )
     }
 
     buildTypes {
@@ -36,6 +55,7 @@ android {
 
     buildFeatures {
         viewBinding = true
+        buildConfig = true
     }
 }
 
