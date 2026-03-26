@@ -206,10 +206,10 @@ class NeuralTtsService(
 
             if (audio != null) {
                 // Play neural TTS audio and suspend until done
-                val completed = suspendCancellableCoroutine<Boolean> { cont ->
+                val completed = suspendCancellableCoroutine { cont ->
                     playMp3(idx, audio,
-                        onComplete = { if (cont.isActive) cont.resume(true, null) },
-                        onError = { if (cont.isActive) cont.resume(false, null) }
+                        onComplete = { if (cont.isActive) cont.resumeWith(Result.success(true)) },
+                        onError = { if (cont.isActive) cont.resumeWith(Result.success(false)) }
                     )
                     cont.invokeOnCancellation { releaseMediaPlayer() }
                 }
@@ -251,17 +251,17 @@ class NeuralTtsService(
         scope.launch {
             val audio = withContext(Dispatchers.IO) { fetchAudio(text) }
             if (audio != null) {
-                suspendCancellableCoroutine<Unit> { cont ->
+                suspendCancellableCoroutine { cont ->
                     playMp3(-1, audio,
-                        onComplete = { if (cont.isActive) cont.resume(Unit, null) },
-                        onError = { if (cont.isActive) cont.resume(Unit, null) }
+                        onComplete = { if (cont.isActive) cont.resumeWith(Result.success(Unit)) },
+                        onError = { if (cont.isActive) cont.resumeWith(Result.success(Unit)) }
                     )
                 }
             } else {
                 // Fallback: use Android TTS for the interrupted snippet
-                suspendCancellableCoroutine<Unit> { cont ->
-                    androidTts?.announce(text) { if (cont.isActive) cont.resume(Unit, null) }
-                        ?: cont.resume(Unit, null)
+                suspendCancellableCoroutine { cont ->
+                    androidTts?.announce(text) { if (cont.isActive) cont.resumeWith(Result.success(Unit)) }
+                        ?: cont.resumeWith(Result.success(Unit))
                 }
             }
         }

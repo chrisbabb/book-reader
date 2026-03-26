@@ -5,10 +5,10 @@ plugins {
     alias(libs.plugins.kotlin.android)
 }
 
-// Load secrets.properties if it exists
-val secretsFile = rootProject.file("secrets.properties")
+// Load API keys from local.properties (gitignored, never committed)
+val localProps = rootProject.file("local.properties")
 val secrets = Properties().apply {
-    if (secretsFile.exists()) load(secretsFile.inputStream())
+    if (localProps.exists()) load(localProps.inputStream())
 }
 
 android {

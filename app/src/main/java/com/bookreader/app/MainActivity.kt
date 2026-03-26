@@ -1,7 +1,6 @@
 package com.bookreader.app
 
 import android.Manifest
-import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Bundle
 import android.view.View
@@ -12,8 +11,6 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import com.bookreader.app.databinding.ActivityMainBinding
 import com.bookreader.app.ui.MainViewModel
-import com.bookreader.app.ui.SettingsActivity
-
 class MainActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityMainBinding
@@ -29,13 +26,6 @@ class MainActivity : AppCompatActivity() {
             !cameraGranted -> showPermissionError("Camera permission is required to scan book pages.")
             !audioGranted -> showPermissionError("Microphone permission is required for voice commands.")
         }
-    }
-
-    private val settingsLauncher = registerForActivityResult(
-        ActivityResultContracts.StartActivityForResult()
-    ) {
-        // Refresh AI status label after returning from settings
-        viewModel.refreshAiStatus()
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -102,10 +92,6 @@ class MainActivity : AppCompatActivity() {
 
         binding.stopButton.setOnClickListener {
             viewModel.stopReading()
-        }
-
-        binding.settingsButton.setOnClickListener {
-            settingsLauncher.launch(Intent(this, SettingsActivity::class.java))
         }
     }
 
