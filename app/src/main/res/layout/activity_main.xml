@@ -34,7 +34,7 @@
         android:layout_marginTop="16dp"
         android:layout_marginStart="16dp" />
 
-    <!-- Top-right: voice picker + AI status + listening indicator -->
+    <!-- Top-right: voice picker + AI status -->
     <LinearLayout
         android:id="@+id/topRightGroup"
         android:layout_width="wrap_content"
@@ -64,19 +64,6 @@
             android:textColor="@color/accent"
             android:textSize="10sp"
             android:gravity="end"
-            android:layout_marginTop="4dp" />
-
-        <TextView
-            android:id="@+id/listeningIndicator"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="Say Hey Reader"
-            android:textColor="@color/accent"
-            android:textSize="11sp"
-            android:background="@color/status_bg"
-            android:paddingHorizontal="8dp"
-            android:paddingVertical="4dp"
-            android:visibility="gone"
             android:layout_marginTop="4dp" />
 
     </LinearLayout>
