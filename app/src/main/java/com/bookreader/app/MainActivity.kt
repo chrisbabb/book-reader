@@ -13,7 +13,6 @@ import androidx.core.content.ContextCompat
 import com.bookreader.app.UserPreferences
 import com.bookreader.app.databinding.ActivityMainBinding
 import com.bookreader.app.ui.MainViewModel
-import com.bookreader.app.voice.VoiceCommandManager
 class MainActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityMainBinding
@@ -75,30 +74,19 @@ class MainActivity : AppCompatActivity() {
             binding.pauseResumeButton.text = if (paused) getString(R.string.resume) else getString(R.string.pause)
         }
 
-        viewModel.listeningMode.observe(this) { mode ->
-            when (mode) {
-                VoiceCommandManager.ListeningMode.AWAITING_WAKE_WORD -> {
-                    binding.listeningIndicator.visibility = View.VISIBLE
-                    binding.listeningIndicator.text = "Say \"Hey Reader\""
-                    binding.listeningIndicator.alpha = 0.6f
-                }
-                VoiceCommandManager.ListeningMode.AWAITING_COMMAND -> {
-                    binding.listeningIndicator.visibility = View.VISIBLE
-                    binding.listeningIndicator.text = "Listening..."
-                    binding.listeningIndicator.alpha = 1.0f
-                }
-                else -> binding.listeningIndicator.visibility = View.GONE
-            }
-        }
-
-        viewModel.aiStatus.observe(this) { status ->
-            // Show voice button only when OpenAI TTS is active
-            binding.voiceButton.visibility =
-                if (viewModel.apiKeyManager.hasOpenAIKey) View.VISIBLE else View.GONE
+        viewModel.isListening.observe(this) { listening ->
+            binding.listeningIndicator.visibility = if (listening) View.VISIBLE else View.GONE
+            binding.micButton.backgroundTintList = androidx.core.content.res.ResourcesCompat.getColorStateList(
+                resources,
+                if (listening) R.color.accent else R.color.primary,
+                theme
+            )
         }
 
         viewModel.aiStatus.observe(this) { status ->
             binding.aiStatusText.text = status
+            binding.voiceButton.visibility =
+                if (viewModel.apiKeyManager.hasOpenAIKey) View.VISIBLE else View.GONE
         }
     }
 
@@ -134,6 +122,10 @@ class MainActivity : AppCompatActivity() {
 
         binding.voiceButton.setOnClickListener {
             showVoicePicker()
+        }
+
+        binding.micButton.setOnClickListener {
+            viewModel.toggleVoiceSession()
         }
     }
 

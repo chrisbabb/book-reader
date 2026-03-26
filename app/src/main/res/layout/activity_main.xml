@@ -122,7 +122,7 @@
             android:contentDescription="Capture and read the current page"
             android:layout_marginBottom="12dp" />
 
-        <!-- Pause/Resume and Stop row -->
+        <!-- Pause/Resume, Stop, and Mic row -->
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
@@ -134,11 +134,11 @@
                 android:layout_height="60dp"
                 android:layout_weight="1"
                 android:text="@string/pause"
-                android:textSize="18sp"
+                android:textSize="16sp"
                 android:backgroundTint="@color/pause_btn"
                 android:enabled="false"
                 android:contentDescription="Pause or resume reading"
-                android:layout_marginEnd="8dp" />
+                android:layout_marginEnd="6dp" />
 
             <Button
                 android:id="@+id/stopButton"
@@ -146,24 +146,49 @@
                 android:layout_height="60dp"
                 android:layout_weight="1"
                 android:text="@string/stop"
-                android:textSize="18sp"
+                android:textSize="16sp"
                 android:backgroundTint="@color/stop_btn"
                 android:enabled="false"
                 android:contentDescription="Stop reading"
-                android:layout_marginStart="8dp" />
+                android:layout_marginStart="6dp"
+                android:layout_marginEnd="6dp" />
+
+            <!-- Mic button: tap to listen for one voice command -->
+            <Button
+                android:id="@+id/micButton"
+                android:layout_width="0dp"
+                android:layout_height="60dp"
+                android:layout_weight="1"
+                android:text="🎤"
+                android:textSize="22sp"
+                android:backgroundTint="@color/primary"
+                android:contentDescription="Tap to give a voice command"
+                android:layout_marginStart="6dp" />
 
         </LinearLayout>
+
+        <!-- Listening status (shown when mic is active) -->
+        <TextView
+            android:id="@+id/listeningIndicator"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Listening..."
+            android:textColor="@color/accent"
+            android:textSize="13sp"
+            android:gravity="center"
+            android:layout_marginTop="6dp"
+            android:visibility="gone" />
 
         <!-- Voice command hint -->
         <TextView
             android:id="@+id/voiceHintText"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="Say: pause, resume, stop, previous sentence, last 5 words, read page"
+            android:text="Tap 🎤 then say: pause, resume, stop, previous sentence, last 5 words, read page"
             android:textColor="#AAFFFFFF"
             android:textSize="11sp"
             android:gravity="center"
-            android:layout_marginTop="8dp" />
+            android:layout_marginTop="4dp" />
 
     </LinearLayout>
 

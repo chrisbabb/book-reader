@@ -36,8 +36,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _isPaused = MutableLiveData(false)
     val isPaused: LiveData<Boolean> = _isPaused
 
-    private val _listeningMode = MutableLiveData(VoiceCommandManager.ListeningMode.IDLE)
-    val listeningMode: LiveData<VoiceCommandManager.ListeningMode> = _listeningMode
+    private val _isListening = MutableLiveData(false)
+    val isListening: LiveData<Boolean> = _isListening
 
     private val _canCapture = MutableLiveData(true)
     val canCapture: LiveData<Boolean> = _canCapture
@@ -125,9 +125,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         voiceManager = VoiceCommandManager(
             context = getApplication(),
             onCommandRecognized = { command -> handleVoiceCommand(command) },
-            onListeningModeChanged = { mode -> _listeningMode.postValue(mode) }
+            onListeningModeChanged = { mode ->
+                _isListening.postValue(mode == VoiceCommandManager.ListeningMode.LISTENING)
+            }
         )
-        voiceManager?.start()
+        // Mic starts OFF — only activates when user taps the mic button
+    }
+
+    /** Called by the mic button. Starts one listening session; tapping again cancels it. */
+    fun toggleVoiceSession() {
+        voiceManager?.startSession()
     }
 
     fun captureAndReadPage() {
