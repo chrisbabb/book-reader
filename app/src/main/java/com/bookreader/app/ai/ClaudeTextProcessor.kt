@@ -57,9 +57,8 @@ class ClaudeTextProcessor(private val apiKeyManager: ApiKeyManager) {
 
         val request = Request.Builder()
             .url(ANTHROPIC_MESSAGES_URL)
-            .addHeader("x-api-key", apiKey)
-            .addHeader("anthropic-version", "2023-06-01")
-            .addHeader("content-type", "application/json")
+            .header("x-api-key", apiKey)
+            .header("anthropic-version", "2023-06-01")
             .post(requestJson.toRequestBody("application/json".toMediaType()))
             .build()
 

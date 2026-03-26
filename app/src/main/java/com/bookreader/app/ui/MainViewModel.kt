@@ -83,6 +83,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             onPageDone = {
                 handlePageDone()
             },
+            onNeuralTtsFallback = {
+                Log.w(TAG, "OpenAI TTS unavailable — falling back to device voice")
+                _aiStatus.postValue("OpenAI TTS unavailable — using device voice")
+            },
             onReady = {
                 viewModelScope.launch {
                     try {

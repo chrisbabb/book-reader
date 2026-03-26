@@ -35,7 +35,9 @@ class NeuralTtsService(
     private val onSentenceStarted: (sentenceIndex: Int, sentence: String) -> Unit = { _, _ -> },
     private val onSentenceDone: (sentenceIndex: Int) -> Unit = {},
     private val onPageDone: () -> Unit = {},
-    private val onReady: () -> Unit = {}
+    private val onReady: () -> Unit = {},
+    /** Called once the first time OpenAI TTS fails and the app falls back to device voice. */
+    private val onNeuralTtsFallback: (() -> Unit)? = null
 ) {
     // Android TTS — always available; used for announcements + fallback reading
     private var androidTts: TextToSpeechManager? = null
@@ -55,6 +57,7 @@ class NeuralTtsService(
 
     // Pre-fetch cache: sentence index → MP3 bytes (null = fetch failed)
     private val audioCache = mutableMapOf<Int, ByteArray?>()
+    private var hasFallenBack = false   // only fire onNeuralTtsFallback once
 
     private val httpClient = OkHttpClient.Builder()
         .connectTimeout(30, TimeUnit.SECONDS)
@@ -79,10 +82,9 @@ class NeuralTtsService(
         paragraphs = text.split(Regex("\n\n+")).filter { it.isNotBlank() }
         currentSentenceIndex = 0
         audioCache.clear()
-
-        if (!apiKeyManager.hasOpenAIKey) {
-            androidTts?.loadText(text)
-        }
+        hasFallenBack = false
+        // Always load Android TTS so it's ready as a fallback
+        androidTts?.loadText(text)
     }
 
     fun startReading(fromSentenceIndex: Int = 0) {
@@ -215,12 +217,17 @@ class NeuralTtsService(
                     cont.invokeOnCancellation { releaseMediaPlayer() }
                 }
                 if (!completed) {
-                    // Neural TTS failed mid-sentence; skip and continue
-                    Log.w(TAG, "Playback failed for sentence $idx, skipping")
+                    Log.w(TAG, "MediaPlayer error for sentence $idx, using Android TTS fallback")
+                    speakWithAndroidTts(sentence)
                 }
             } else {
-                // No audio (fetch failed) — small pause so it doesn't race
-                delay(200)
+                // OpenAI fetch failed — fall back to Android TTS for this sentence
+                Log.w(TAG, "OpenAI audio unavailable for sentence $idx, using Android TTS fallback")
+                if (!hasFallenBack) {
+                    hasFallenBack = true
+                    onNeuralTtsFallback?.invoke()
+                }
+                speakWithAndroidTts(sentence)
             }
 
             if (!paused.get() && !stopped.get()) {
@@ -243,6 +250,15 @@ class NeuralTtsService(
                     audioCache[i] = fetchAudio(sentences[i])
                 }
             }
+        }
+    }
+
+    /** Speaks [text] via Android TTS and suspends until the utterance is done. */
+    private suspend fun speakWithAndroidTts(text: String) {
+        suspendCancellableCoroutine { cont ->
+            androidTts?.announce(text) {
+                if (cont.isActive) cont.resumeWith(Result.success(Unit))
+            } ?: cont.resumeWith(Result.success(Unit))
         }
     }
 
@@ -304,8 +320,7 @@ class NeuralTtsService(
 
         val request = Request.Builder()
             .url(OPENAI_TTS_URL)
-            .addHeader("Authorization", "Bearer $apiKey")
-            .addHeader("Content-Type", "application/json")
+            .header("Authorization", "Bearer $apiKey")
             .post(body.toRequestBody("application/json".toMediaType()))
             .build()
 
