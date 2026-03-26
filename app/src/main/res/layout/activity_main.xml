@@ -129,7 +129,7 @@
             android:id="@+id/voiceHintText"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="Say: \"pause\", \"resume\", \"stop\", \"previous sentence\", \"last 5 words\", \"read page\""
+            android:text="Say: pause, resume, stop, previous sentence, last 5 words, read page"
             android:textColor="#AAFFFFFF"
             android:textSize="11sp"
             android:gravity="center"
