@@ -208,8 +208,8 @@ class NeuralTtsService(
                 // Play neural TTS audio and suspend until done
                 val completed = suspendCancellableCoroutine<Boolean> { cont ->
                     playMp3(idx, audio,
-                        onComplete = { if (cont.isActive) cont.resume(true) {} },
-                        onError = { if (cont.isActive) cont.resume(false) {} }
+                        onComplete = { if (cont.isActive) cont.resume(true, null) },
+                        onError = { if (cont.isActive) cont.resume(false, null) }
                     )
                     cont.invokeOnCancellation { releaseMediaPlayer() }
                 }
@@ -253,15 +253,15 @@ class NeuralTtsService(
             if (audio != null) {
                 suspendCancellableCoroutine<Unit> { cont ->
                     playMp3(-1, audio,
-                        onComplete = { if (cont.isActive) cont.resume(Unit) {} },
-                        onError = { if (cont.isActive) cont.resume(Unit) {} }
+                        onComplete = { if (cont.isActive) cont.resume(Unit, null) },
+                        onError = { if (cont.isActive) cont.resume(Unit, null) }
                     )
                 }
             } else {
                 // Fallback: use Android TTS for the interrupted snippet
                 suspendCancellableCoroutine<Unit> { cont ->
-                    androidTts?.announce(text) { if (cont.isActive) cont.resume(Unit) {} }
-                        ?: cont.resume(Unit)
+                    androidTts?.announce(text) { if (cont.isActive) cont.resume(Unit, null) }
+                        ?: cont.resume(Unit, null)
                 }
             }
         }
