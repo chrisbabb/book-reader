@@ -75,8 +75,9 @@ dependencies {
     implementation(libs.androidx.camera.lifecycle)
     implementation(libs.androidx.camera.view)
 
-    // ML Kit Text Recognition (on-device, no internet required)
+    // ML Kit — on-device, no internet required
     implementation(libs.mlkit.text.recognition)
+    implementation(libs.mlkit.object.detection)
 
     // Coroutines
     implementation(libs.kotlinx.coroutines.android)
