@@ -69,13 +69,13 @@ class MainActivity : AppCompatActivity() {
         }
 
         viewModel.pageDetectionState.observe(this) { state ->
-            binding.pageDetectionOverlay.updateDetection(state, viewModel.pageDetectionRect.value)
+            binding.pageDetectionOverlay.updateDetection(state, viewModel.pageDetectionCorners.value)
         }
 
-        viewModel.pageDetectionRect.observe(this) { rect ->
+        viewModel.pageDetectionCorners.observe(this) { corners ->
             binding.pageDetectionOverlay.updateDetection(
                 viewModel.pageDetectionState.value ?: com.bookreader.app.camera.PageDetectionState.SEARCHING,
-                rect
+                corners
             )
         }
 

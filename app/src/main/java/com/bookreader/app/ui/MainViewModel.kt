@@ -1,7 +1,6 @@
 package com.bookreader.app.ui
 
 import android.app.Application
-import android.graphics.RectF
 import android.util.Log
 import androidx.camera.view.PreviewView
 import androidx.lifecycle.AndroidViewModel
@@ -51,8 +50,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _pageDetectionState = MutableLiveData(PageDetectionState.SEARCHING)
     val pageDetectionState: LiveData<PageDetectionState> = _pageDetectionState
 
-    private val _pageDetectionRect = MutableLiveData<RectF?>(null)
-    val pageDetectionRect: LiveData<RectF?> = _pageDetectionRect
+    private val _pageDetectionCorners = MutableLiveData<FloatArray?>(null)
+    val pageDetectionCorners: LiveData<FloatArray?> = _pageDetectionCorners
 
     val aiStatus: LiveData<String> = _aiStatus
 
@@ -159,9 +158,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         voiceManager?.startSession()
     }
 
-    private fun onPageDetectionUpdate(state: PageDetectionState, rect: RectF?) {
+    private fun onPageDetectionUpdate(state: PageDetectionState, corners: FloatArray?) {
         _pageDetectionState.postValue(state)
-        _pageDetectionRect.postValue(rect)
+        _pageDetectionCorners.postValue(corners)
         // Don't give guidance while the app is busy reading or capturing
         if (_isReading.value == true || _canCapture.value == false) return
 

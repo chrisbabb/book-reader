@@ -4,16 +4,20 @@ import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
-import android.graphics.RectF
+import android.graphics.Path
 import android.util.AttributeSet
 import android.view.View
 
 /**
- * Draws a dynamic rectangle that tracks the detected book page in real time.
+ * Draws a dynamic quadrilateral that tracks the detected book page in real time.
+ * The rectangle follows the page at any angle.
  *
- *  SEARCHING — no rectangle; shows a "Point camera at a book page" hint
- *  PARTIAL   — solid red rectangle around the detected page area
- *  ALIGNED   — solid green rectangle; entire page is visible
+ *  SEARCHING — no rectangle; shows a hint label
+ *  PARTIAL   — red outline + transparent fill; page not fully in view
+ *  ALIGNED   — green outline + transparent fill; entire page visible
+ *
+ * Corner positions are smoothed with an exponential moving average so the
+ * rectangle glides rather than jumps.
  */
 class PageDetectionOverlay @JvmOverloads constructor(
     context: Context,
@@ -21,15 +25,19 @@ class PageDetectionOverlay @JvmOverloads constructor(
 ) : View(context, attrs) {
 
     private var state = PageDetectionState.SEARCHING
-    private var pageRect: RectF? = null
 
-    private val boxPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        style = Paint.Style.STROKE
-        strokeWidth = 6f
-    }
+    // Smoothed corners: x0,y0, x1,y1, x2,y2, x3,y3 in view pixels
+    private var smoothed: FloatArray? = null
 
     private val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.FILL
+    }
+
+    private val strokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeWidth = 5f
+        strokeJoin = Paint.Join.ROUND
+        strokeCap = Paint.Cap.ROUND
     }
 
     private val labelPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -39,9 +47,24 @@ class PageDetectionOverlay @JvmOverloads constructor(
         setShadowLayer(8f, 0f, 2f, Color.BLACK)
     }
 
-    fun updateDetection(newState: PageDetectionState, newRect: RectF?) {
+    /**
+     * Called from the main thread (via LiveData observers) with fresh detection data.
+     * [corners] is a FloatArray of 8 values: x0,y0, x1,y1, x2,y2, x3,y3, or null when not detected.
+     */
+    fun updateDetection(newState: PageDetectionState, corners: FloatArray?) {
         state = newState
-        pageRect = newRect
+        if (corners != null && corners.size == 8) {
+            val s = smoothed
+            if (s == null) {
+                smoothed = corners.clone()
+            } else {
+                for (i in s.indices) {
+                    s[i] = ALPHA * corners[i] + (1f - ALPHA) * s[i]
+                }
+            }
+        } else {
+            smoothed = null
+        }
         invalidate()
     }
 
@@ -49,36 +72,51 @@ class PageDetectionOverlay @JvmOverloads constructor(
         super.onDraw(canvas)
         if (width == 0 || height == 0) return
 
-        val rect = pageRect
-        when {
-            state == PageDetectionState.SEARCHING || rect == null -> {
-                // Just show a hint label centered on screen
-                canvas.drawText(
-                    "Point camera at a book page",
-                    width / 2f,
-                    height / 2f,
-                    labelPaint
-                )
-            }
-            state == PageDetectionState.PARTIAL -> {
-                // Semi-transparent red fill + red border
-                fillPaint.color = 0x33FF2222.toInt()
-                boxPaint.color = Color.RED
-                canvas.drawRect(rect, fillPaint)
-                canvas.drawRect(rect, boxPaint)
-                // Label below the rect
-                val labelY = (rect.bottom + 56f).coerceAtMost(height.toFloat() - 8f)
-                canvas.drawText("Move closer — show full page", rect.centerX(), labelY, labelPaint)
-            }
-            state == PageDetectionState.ALIGNED -> {
-                // Semi-transparent green fill + green border
-                fillPaint.color = 0x3322DD44.toInt()
-                boxPaint.color = 0xFF22CC44.toInt()
-                canvas.drawRect(rect, fillPaint)
-                canvas.drawRect(rect, boxPaint)
-                val labelY = (rect.bottom + 56f).coerceAtMost(height.toFloat() - 8f)
-                canvas.drawText("Page aligned — hold steady", rect.centerX(), labelY, labelPaint)
-            }
+        val c = smoothed
+        if (c == null || state == PageDetectionState.SEARCHING) {
+            canvas.drawText(
+                "Point camera at a book page",
+                width / 2f,
+                height / 2f,
+                labelPaint
+            )
+            return
         }
+
+        when (state) {
+            PageDetectionState.PARTIAL -> {
+                fillPaint.color   = 0x33FF2222.toInt()
+                strokePaint.color = Color.RED
+            }
+            PageDetectionState.ALIGNED -> {
+                fillPaint.color   = 0x3322DD55.toInt()
+                strokePaint.color = 0xFF22CC44.toInt()
+            }
+            else -> return
+        }
+
+        val path = Path().apply {
+            moveTo(c[0], c[1])
+            lineTo(c[2], c[3])
+            lineTo(c[4], c[5])
+            lineTo(c[6], c[7])
+            close()
+        }
+        canvas.drawPath(path, fillPaint)
+        canvas.drawPath(path, strokePaint)
+
+        // Label centered below the detected rectangle
+        val centerX = (c[0] + c[2] + c[4] + c[6]) / 4f
+        val bottomY = maxOf(c[1], c[3], c[5], c[7])
+        val labelY  = (bottomY + 56f).coerceAtMost(height.toFloat() - 8f)
+        val label   = if (state == PageDetectionState.ALIGNED)
+            "Page aligned — hold steady"
+        else
+            "Move closer — show full page"
+        canvas.drawText(label, centerX, labelY, labelPaint)
+    }
+
+    companion object {
+        private const val ALPHA = 0.35f  // EMA smoothing factor (higher = more responsive)
     }
 }

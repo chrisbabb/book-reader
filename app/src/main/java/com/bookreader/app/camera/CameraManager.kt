@@ -4,7 +4,7 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Matrix
-import android.graphics.RectF
+import android.graphics.PointF
 import android.util.Log
 import android.util.Size
 import androidx.camera.core.CameraSelector
@@ -26,6 +26,10 @@ import kotlinx.coroutines.suspendCancellableCoroutine
 import java.lang.ref.WeakReference
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
+import kotlin.math.atan2
+import kotlin.math.cos
+import kotlin.math.max
+import kotlin.math.sin
 
 class CameraManager(private val context: Context) {
 
@@ -33,7 +37,7 @@ class CameraManager(private val context: Context) {
     private var cameraProvider: ProcessCameraProvider? = null
 
     // Page detection
-    private var pageDetectionCallback: ((PageDetectionState, RectF?) -> Unit)? = null
+    private var pageDetectionCallback: ((PageDetectionState, FloatArray?) -> Unit)? = null
     private var previewViewRef: WeakReference<PreviewView>? = null
     private var isAnalyzing = false
     private var analysisEnabled = true
@@ -46,7 +50,7 @@ class CameraManager(private val context: Context) {
     suspend fun startCamera(
         lifecycleOwner: LifecycleOwner,
         previewView: PreviewView,
-        onPageDetected: ((PageDetectionState, RectF?) -> Unit)? = null
+        onPageDetected: ((PageDetectionState, FloatArray?) -> Unit)? = null
     ) {
         pageDetectionCallback = onPageDetected
         previewViewRef = WeakReference(previewView)
@@ -88,7 +92,7 @@ class CameraManager(private val context: Context) {
         }
     }
 
-    /** Pause page detection (e.g. while reading so frames aren't wasted). */
+    /** Pause page detection while reading so frames aren't wasted. */
     fun setAnalysisEnabled(enabled: Boolean) {
         analysisEnabled = enabled
         if (enabled) {
@@ -162,9 +166,9 @@ class CameraManager(private val context: Context) {
         val inputImage = InputImage.fromMediaImage(mediaImage, rotation)
         analysisRecognizer.process(inputImage)
             .addOnSuccessListener { result ->
-                val (state, imageRect) = evaluateDetection(result.textBlocks, imgW, imgH)
-                val viewRect = imageRect?.let { imageRectToViewRect(it, imgW, imgH) }
-                pageDetectionCallback?.invoke(state, viewRect)
+                val (state, normalizedCorners) = evaluateDetection(result.textBlocks, imgW, imgH)
+                val viewCorners = normalizedCorners?.let { imagePointsToViewPoints(it, imgW, imgH) }
+                pageDetectionCallback?.invoke(state, viewCorners)
             }
             .addOnFailureListener {
                 pageDetectionCallback?.invoke(PageDetectionState.SEARCHING, null)
@@ -176,75 +180,162 @@ class CameraManager(private val context: Context) {
     }
 
     /**
-     * Returns the detection state and the bounding rect of all text blocks in image coordinates.
+     * Collects all corner points from every text block, computes the minimum-area
+     * bounding rectangle (possibly rotated), and returns the detection state plus
+     * the 4 corners as a FloatArray [x0,y0, x1,y1, x2,y2, x3,y3] in normalized (0..1) space.
      */
     private fun evaluateDetection(
         blocks: List<com.google.mlkit.vision.text.Text.TextBlock>,
         imageWidth: Int,
         imageHeight: Int
-    ): Pair<PageDetectionState, RectF?> {
+    ): Pair<PageDetectionState, FloatArray?> {
         if (blocks.isEmpty()) return Pair(PageDetectionState.SEARCHING, null)
 
-        val normalizedBounds = blocks.mapNotNull { block ->
-            val b = block.boundingBox ?: return@mapNotNull null
-            RectF(
-                b.left.toFloat() / imageWidth,
-                b.top.toFloat() / imageHeight,
-                b.right.toFloat() / imageWidth,
-                b.bottom.toFloat() / imageHeight
-            )
+        // Collect all corner points from every block (normalized 0..1)
+        val allPoints = mutableListOf<PointF>()
+        for (block in blocks) {
+            val corners = block.cornerPoints
+            if (corners != null && corners.size == 4) {
+                for (pt in corners) {
+                    allPoints.add(PointF(pt.x.toFloat() / imageWidth, pt.y.toFloat() / imageHeight))
+                }
+            } else {
+                val b = block.boundingBox ?: continue
+                allPoints.add(PointF(b.left.toFloat() / imageWidth,  b.top.toFloat()    / imageHeight))
+                allPoints.add(PointF(b.right.toFloat() / imageWidth, b.top.toFloat()    / imageHeight))
+                allPoints.add(PointF(b.right.toFloat() / imageWidth, b.bottom.toFloat() / imageHeight))
+                allPoints.add(PointF(b.left.toFloat() / imageWidth,  b.bottom.toFloat() / imageHeight))
+            }
         }
-        if (normalizedBounds.isEmpty()) return Pair(PageDetectionState.SEARCHING, null)
 
-        val pageLeft   = normalizedBounds.minOf { it.left }
-        val pageTop    = normalizedBounds.minOf { it.top }
-        val pageRight  = normalizedBounds.maxOf { it.right }
-        val pageBottom = normalizedBounds.maxOf { it.bottom }
+        if (allPoints.size < 3) return Pair(PageDetectionState.SEARCHING, null)
 
-        val pageArea = (pageRight - pageLeft) * (pageBottom - pageTop)
+        val corners = minimumBoundingRectangle(allPoints)
+            ?: return Pair(PageDetectionState.SEARCHING, null)
 
-        if (pageArea < 0.04f) return Pair(PageDetectionState.SEARCHING, null)
+        // Axis-aligned span to filter noise
+        val xs = floatArrayOf(corners[0], corners[2], corners[4], corners[6])
+        val ys = floatArrayOf(corners[1], corners[3], corners[5], corners[7])
+        val spanX = xs.max() - xs.min()
+        val spanY = ys.max() - ys.min()
+        val approxArea = spanX * spanY
+        if (approxArea < 0.04f) return Pair(PageDetectionState.SEARCHING, null)
 
-        // Normalized rect in image space (0..1 on each axis)
-        val normalizedRect = RectF(pageLeft, pageTop, pageRight, pageBottom)
+        // Fully visible = all corners within 5% margin
+        val margin = 0.05f
+        val fullyVisible = xs.all { it in margin..(1f - margin) } &&
+                           ys.all { it in margin..(1f - margin) }
 
-        // Determine if fully within frame with small margin (7% on each side)
-        val margin = 0.07f
-        val fullyVisible = pageLeft >= margin && pageTop >= margin &&
-                           pageRight <= (1f - margin) && pageBottom <= (1f - margin)
-
-        val state = if (fullyVisible && pageArea >= 0.30f) PageDetectionState.ALIGNED
+        val state = if (fullyVisible && approxArea >= 0.25f) PageDetectionState.ALIGNED
                     else PageDetectionState.PARTIAL
 
-        return Pair(state, normalizedRect)
+        return Pair(state, corners)
     }
 
     /**
-     * Converts a normalized rect (0..1 in image space) to pixel coordinates in the PreviewView,
-     * accounting for FILL_CENTER scaling.
+     * Converts normalized corner points (0..1 in image space) to pixel coordinates
+     * in the PreviewView, respecting FILL_CENTER scaling.
      */
-    private fun imageRectToViewRect(normalizedRect: RectF, imgW: Int, imgH: Int): RectF? {
+    private fun imagePointsToViewPoints(corners: FloatArray, imgW: Int, imgH: Int): FloatArray? {
         val previewView = previewViewRef?.get() ?: return null
         val viewW = previewView.width.toFloat()
         val viewH = previewView.height.toFloat()
         if (viewW == 0f || viewH == 0f) return null
 
-        // FILL_CENTER: scale so both dimensions fill, then center
-        val scale = maxOf(viewW / imgW, viewH / imgH)
+        val scale = max(viewW / imgW, viewH / imgH)
         val scaledW = imgW * scale
         val scaledH = imgH * scale
         val offsetX = (viewW - scaledW) / 2f
         val offsetY = (viewH - scaledH) / 2f
 
-        return RectF(
-            offsetX + normalizedRect.left  * scaledW,
-            offsetY + normalizedRect.top   * scaledH,
-            offsetX + normalizedRect.right * scaledW,
-            offsetY + normalizedRect.bottom* scaledH
-        )
+        val result = FloatArray(corners.size)
+        for (i in corners.indices step 2) {
+            result[i]     = offsetX + corners[i]     * scaledW
+            result[i + 1] = offsetY + corners[i + 1] * scaledH
+        }
+        return result
     }
 
-    // ── Helpers ───────────────────────────────────────────────────────────────
+    // ── Geometry helpers ──────────────────────────────────────────────────────
+
+    /**
+     * Minimum-area bounding rectangle via convex hull + rotating calipers.
+     * Returns 8 floats: x0,y0, x1,y1, x2,y2, x3,y3 (normalized coords).
+     */
+    private fun minimumBoundingRectangle(points: List<PointF>): FloatArray? {
+        val hull = convexHull(points)
+        if (hull.size < 2) return null
+
+        var minArea = Float.MAX_VALUE
+        var bestCorners: FloatArray? = null
+
+        for (i in hull.indices) {
+            val p1 = hull[i]
+            val p2 = hull[(i + 1) % hull.size]
+
+            val angle = atan2((p2.y - p1.y).toDouble(), (p2.x - p1.x).toDouble()).toFloat()
+            val cosA = cos(angle.toDouble()).toFloat()
+            val sinA = sin(angle.toDouble()).toFloat()
+
+            // Rotate all hull points to align this edge with the x-axis
+            var minX = Float.MAX_VALUE; var maxX = -Float.MAX_VALUE
+            var minY = Float.MAX_VALUE; var maxY = -Float.MAX_VALUE
+            for (p in hull) {
+                val rx =  p.x * cosA + p.y * sinA
+                val ry = -p.x * sinA + p.y * cosA
+                if (rx < minX) minX = rx; if (rx > maxX) maxX = rx
+                if (ry < minY) minY = ry; if (ry > maxY) maxY = ry
+            }
+
+            val area = (maxX - minX) * (maxY - minY)
+            if (area < minArea) {
+                minArea = area
+                // Un-rotate the 4 axis-aligned corners back to image space
+                fun unrot(rx: Float, ry: Float) = PointF(
+                    rx * cosA - ry * sinA,
+                    rx * sinA + ry * cosA
+                )
+                val tl = unrot(minX, minY)
+                val tr = unrot(maxX, minY)
+                val br = unrot(maxX, maxY)
+                val bl = unrot(minX, maxY)
+                bestCorners = floatArrayOf(
+                    tl.x, tl.y,
+                    tr.x, tr.y,
+                    br.x, br.y,
+                    bl.x, bl.y
+                )
+            }
+        }
+        return bestCorners
+    }
+
+    /** Andrew's monotone chain convex hull. */
+    private fun convexHull(pts: List<PointF>): List<PointF> {
+        if (pts.size <= 1) return pts
+        val sorted = pts.sortedWith(compareBy({ it.x }, { it.y }))
+
+        val lower = mutableListOf<PointF>()
+        for (p in sorted) {
+            while (lower.size >= 2 && cross(lower[lower.size - 2], lower[lower.size - 1], p) <= 0f)
+                lower.removeAt(lower.size - 1)
+            lower.add(p)
+        }
+        val upper = mutableListOf<PointF>()
+        for (p in sorted.reversed()) {
+            while (upper.size >= 2 && cross(upper[upper.size - 2], upper[upper.size - 1], p) <= 0f)
+                upper.removeAt(upper.size - 1)
+            upper.add(p)
+        }
+        lower.removeAt(lower.size - 1)
+        upper.removeAt(upper.size - 1)
+        return lower + upper
+    }
+
+    private fun cross(o: PointF, a: PointF, b: PointF): Float =
+        (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x)
+
+    // ── Bitmap helpers ────────────────────────────────────────────────────────
 
     private fun imageProxyToBitmap(image: ImageProxy): Bitmap {
         val buffer = image.planes[0].buffer
@@ -270,6 +361,6 @@ class CameraManager(private val context: Context) {
 
     companion object {
         private const val TAG = "CameraManager"
-        private const val ANALYSIS_INTERVAL_MS = 800L   // ~1.25 fps
+        private const val ANALYSIS_INTERVAL_MS = 200L   // ~5 fps for fluid tracking
     }
 }
