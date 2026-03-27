@@ -77,7 +77,7 @@ dependencies {
 
     // ML Kit — on-device, no internet required
     implementation(libs.mlkit.text.recognition)
-    implementation(libs.mlkit.objectdetect)
+    implementation("com.google.mlkit:object-detection:17.0.2")
 
     // Coroutines
     implementation(libs.kotlinx.coroutines.android)
