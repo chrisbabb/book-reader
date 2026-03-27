@@ -1,5 +1,6 @@
 package com.bookreader.app.camera
 
+import android.animation.ValueAnimator
 import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Color
@@ -7,6 +8,7 @@ import android.graphics.Paint
 import android.graphics.Path
 import android.util.AttributeSet
 import android.view.View
+import android.view.animation.DecelerateInterpolator
 
 /**
  * Draws a dynamic quadrilateral that tracks the detected book page in real time.
@@ -16,8 +18,8 @@ import android.view.View
  *  PARTIAL   — red outline + transparent fill; page not fully in view
  *  ALIGNED   — green outline + transparent fill; entire page visible
  *
- * Corner positions are smoothed with an exponential moving average so the
- * rectangle glides rather than jumps.
+ * Corner positions animate smoothly over 300 ms using ValueAnimator so the
+ * rectangle glides fluidly between AI-detected positions.
  */
 class PageDetectionOverlay @JvmOverloads constructor(
     context: Context,
@@ -26,8 +28,10 @@ class PageDetectionOverlay @JvmOverloads constructor(
 
     private var state = PageDetectionState.SEARCHING
 
-    // Smoothed corners: x0,y0, x1,y1, x2,y2, x3,y3 in view pixels
-    private var smoothed: FloatArray? = null
+    // Currently displayed corners (animated): x0,y0, x1,y1, x2,y2, x3,y3 in view pixels
+    private var displayCorners: FloatArray? = null
+
+    private var currentAnimator: ValueAnimator? = null
 
     private val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.FILL
@@ -53,26 +57,38 @@ class PageDetectionOverlay @JvmOverloads constructor(
      */
     fun updateDetection(newState: PageDetectionState, corners: FloatArray?) {
         state = newState
-        if (corners != null && corners.size == 8) {
-            val s = smoothed
-            if (s == null) {
-                smoothed = corners.clone()
-            } else {
-                for (i in s.indices) {
-                    s[i] = ALPHA * corners[i] + (1f - ALPHA) * s[i]
-                }
-            }
-        } else {
-            smoothed = null
+
+        if (corners == null || corners.size != 8) {
+            currentAnimator?.cancel()
+            displayCorners = null
+            invalidate()
+            return
         }
-        invalidate()
+
+        // Animate from current display position to the new AI-detected position
+        val from = displayCorners?.clone() ?: corners.clone()
+
+        currentAnimator?.cancel()
+        currentAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
+            duration = ANIM_DURATION_MS
+            interpolator = DecelerateInterpolator()
+            addUpdateListener { anim ->
+                val t = anim.animatedFraction
+                val d = displayCorners ?: FloatArray(8).also { displayCorners = it }
+                for (i in from.indices) {
+                    d[i] = from[i] + (corners[i] - from[i]) * t
+                }
+                invalidate()
+            }
+            start()
+        }
     }
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
         if (width == 0 || height == 0) return
 
-        val c = smoothed
+        val c = displayCorners
         if (c == null || state == PageDetectionState.SEARCHING) {
             canvas.drawText(
                 "Point camera at a book page",
@@ -117,6 +133,6 @@ class PageDetectionOverlay @JvmOverloads constructor(
     }
 
     companion object {
-        private const val ALPHA = 0.35f  // EMA smoothing factor (higher = more responsive)
+        private const val ANIM_DURATION_MS = 300L
     }
 }

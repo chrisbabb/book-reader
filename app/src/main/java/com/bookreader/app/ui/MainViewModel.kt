@@ -12,6 +12,7 @@ import com.bookreader.app.UserPreferences
 import com.bookreader.app.ai.ApiKeyManager
 import com.bookreader.app.ai.ClaudeTextProcessor
 import com.bookreader.app.ai.NeuralTtsService
+import com.bookreader.app.ai.PageDetectorAI
 import com.bookreader.app.camera.CameraManager
 import com.bookreader.app.camera.PageDetectionState
 import com.bookreader.app.ocr.OCRProcessor
@@ -59,7 +60,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val apiKeyManager = ApiKeyManager(application)
     val userPreferences = UserPreferences(application)
     private val claudeProcessor = ClaudeTextProcessor(apiKeyManager)
-    private val cameraManager = CameraManager(application)
+    private val pageDetectorAI = PageDetectorAI(apiKeyManager)
+    private val cameraManager = CameraManager(application, viewModelScope, pageDetectorAI)
     private val ocrProcessor = OCRProcessor()
     private val stateManager = ReadingStateManager(application)
 
