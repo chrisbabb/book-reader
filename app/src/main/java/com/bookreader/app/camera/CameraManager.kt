@@ -61,10 +61,12 @@ class CameraManager(
     private var analysisEnabled = true
     private var lastAnalysisMs = 0L
 
-    // ML Kit fallback
-    private val mlKitRecognizer: TextRecognizer by lazy {
-        TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
-    }
+    // ML Kit fallback — created on demand, only when no AI key is configured
+    private var mlKitRecognizer: TextRecognizer? = null
+
+    private fun getOrCreateMlKitRecognizer(): TextRecognizer =
+        mlKitRecognizer ?: TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
+            .also { mlKitRecognizer = it }
 
     // ── Camera setup ──────────────────────────────────────────────────────────
 
@@ -155,7 +157,8 @@ class CameraManager(
         cameraProvider?.unbindAll()
         cameraProvider = null
         imageCapture = null
-        if (::mlKitRecognizer.isInitialized) mlKitRecognizer.close()
+        mlKitRecognizer?.close()
+        mlKitRecognizer = null
     }
 
     // ── Analysis dispatch ─────────────────────────────────────────────────────
@@ -202,7 +205,7 @@ class CameraManager(
     // ── ML Kit fallback detection ─────────────────────────────────────────────
 
     private fun analyzeWithMlKit(bitmap: Bitmap) {
-        mlKitRecognizer.process(InputImage.fromBitmap(bitmap, 0))
+        getOrCreateMlKitRecognizer().process(InputImage.fromBitmap(bitmap, 0))
             .addOnSuccessListener { result ->
                 val (state, normCorners) = evaluateTextBlocks(
                     result.textBlocks, bitmap.width, bitmap.height
