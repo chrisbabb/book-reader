@@ -25,7 +25,7 @@ class PageDetectorAI(private val apiKeyManager: ApiKeyManager) {
 
     private val httpClient = OkHttpClient.Builder()
         .connectTimeout(10, TimeUnit.SECONDS)
-        .readTimeout(15, TimeUnit.SECONDS)
+        .readTimeout(20, TimeUnit.SECONDS)
         .build()
 
     /**
@@ -43,10 +43,12 @@ class PageDetectorAI(private val apiKeyManager: ApiKeyManager) {
             try {
                 val scaled = scaleBitmap(bitmap, MAX_SEND_DIM)
                 val base64 = bitmapToBase64(scaled)
+                Log.d(TAG, "Sending ${scaled.width}x${scaled.height} image to Claude Vision")
 
                 val requestJson = JSONObject().apply {
                     put("model", MODEL)
-                    put("max_tokens", 256)
+                    put("max_tokens", 300)
+                    put("system", SYSTEM_PROMPT)
                     put("messages", org.json.JSONArray().apply {
                         put(JSONObject().apply {
                             put("role", "user")
@@ -61,7 +63,7 @@ class PageDetectorAI(private val apiKeyManager: ApiKeyManager) {
                                 })
                                 put(JSONObject().apply {
                                     put("type", "text")
-                                    put("text", PROMPT)
+                                    put("text", USER_PROMPT)
                                 })
                             })
                         })
@@ -79,11 +81,13 @@ class PageDetectorAI(private val apiKeyManager: ApiKeyManager) {
                 val body = response.body?.string()
 
                 if (!response.isSuccessful || body == null) {
-                    Log.w(TAG, "API error ${response.code}")
+                    Log.w(TAG, "API error ${response.code}: $body")
                     return@withContext Pair(PageDetectionState.SEARCHING, null)
                 }
 
-                parseResponse(body)
+                val result = parseResponse(body)
+                Log.d(TAG, "Detection result: ${result.first}, corners=${result.second != null}")
+                result
             } catch (e: Exception) {
                 Log.w(TAG, "Detection failed: ${e.message}")
                 Pair(PageDetectionState.SEARCHING, null)
@@ -98,43 +102,93 @@ class PageDetectorAI(private val apiKeyManager: ApiKeyManager) {
                 .getString("text")
                 .trim()
 
-            // Extract JSON — Claude may wrap it in a markdown code block
-            val jsonStr = Regex("""\{[^{}]*\}""", RegexOption.DOT_MATCHES_ALL)
-                .find(text)?.value
+            Log.d(TAG, "Claude response: $text")
+
+            // Extract the JSON object — handles markdown code fences and extra text
+            val jsonStr = extractJson(text)
                 ?: return Pair(PageDetectionState.SEARCHING, null)
 
             val json = JSONObject(jsonStr)
-            if (json.isNull("tl")) return Pair(PageDetectionState.SEARCHING, null)
 
-            fun coord(key: String): Pair<Float, Float> {
-                val arr = json.getJSONArray(key)
-                return arr.getDouble(0).toFloat() to arr.getDouble(1).toFloat()
+            // No page detected
+            if (json.isNull("tl")) {
+                Log.d(TAG, "Claude: no page found")
+                return Pair(PageDetectionState.SEARCHING, null)
             }
 
-            val (tlx, tly) = coord("tl")
-            val (trx, try_) = coord("tr")
-            val (brx, bry) = coord("br")
-            val (blx, bly) = coord("bl")
+            fun coord(key: String): Pair<Float, Float>? {
+                return try {
+                    val arr = json.getJSONArray(key)
+                    arr.getDouble(0).toFloat() to arr.getDouble(1).toFloat()
+                } catch (e: Exception) { null }
+            }
 
-            val corners = floatArrayOf(tlx, tly, trx, try_, brx, bry, blx, bly)
+            val tl = coord("tl") ?: return Pair(PageDetectionState.SEARCHING, null)
+            val tr = coord("tr") ?: return Pair(PageDetectionState.SEARCHING, null)
+            val br = coord("br") ?: return Pair(PageDetectionState.SEARCHING, null)
+            val bl = coord("bl") ?: return Pair(PageDetectionState.SEARCHING, null)
+
+            val (tlx, tly) = tl
+            val (trx, try_) = tr
+            val (brx, bry) = br
+            val (blx, bly) = bl
+
+            // Clamp to valid range
+            val corners = floatArrayOf(
+                tlx.coerceIn(0f, 1f), tly.coerceIn(0f, 1f),
+                trx.coerceIn(0f, 1f), try_.coerceIn(0f, 1f),
+                brx.coerceIn(0f, 1f), bry.coerceIn(0f, 1f),
+                blx.coerceIn(0f, 1f), bly.coerceIn(0f, 1f)
+            )
+
             val xs = floatArrayOf(tlx, trx, brx, blx)
             val ys = floatArrayOf(tly, try_, bry, bly)
             val approxArea = (xs.max() - xs.min()) * (ys.max() - ys.min())
 
-            if (approxArea < 0.04f) return Pair(PageDetectionState.SEARCHING, null)
+            Log.d(TAG, "Page corners: TL($tlx,$tly) TR($trx,$try_) BR($brx,$bry) BL($blx,$bly) area=$approxArea")
 
-            val margin = 0.05f
-            val fullyVisible = xs.all { it in margin..(1f - margin) } &&
-                               ys.all { it in margin..(1f - margin) }
+            // Reject tiny detections (less than 4% of frame area)
+            if (approxArea < 0.04f) {
+                Log.d(TAG, "Page too small (area=$approxArea), ignoring")
+                return Pair(PageDetectionState.SEARCHING, null)
+            }
 
-            val state = if (fullyVisible && approxArea >= 0.25f) PageDetectionState.ALIGNED
+            // ALIGNED = all corners well inside frame AND page covers enough area
+            val edgeMargin = 0.04f
+            val fullyVisible = xs.all { it in edgeMargin..(1f - edgeMargin) } &&
+                               ys.all { it in edgeMargin..(1f - edgeMargin) }
+            val state = if (fullyVisible && approxArea >= 0.20f) PageDetectionState.ALIGNED
                         else PageDetectionState.PARTIAL
 
             Pair(state, corners)
         } catch (e: Exception) {
-            Log.w(TAG, "Parse error: ${e.message}")
+            Log.w(TAG, "Parse error: ${e.message} body=$body")
             Pair(PageDetectionState.SEARCHING, null)
         }
+    }
+
+    /**
+     * Extracts the first JSON object from a string that may include markdown fences,
+     * reasoning text, or other surrounding content.
+     */
+    private fun extractJson(text: String): String? {
+        // Try to find { ... } that contains "tl"
+        var depth = 0
+        var start = -1
+        for (i in text.indices) {
+            when (text[i]) {
+                '{' -> { if (depth == 0) start = i; depth++ }
+                '}' -> {
+                    depth--
+                    if (depth == 0 && start >= 0) {
+                        val candidate = text.substring(start, i + 1)
+                        if (candidate.contains("\"tl\"")) return candidate
+                        start = -1
+                    }
+                }
+            }
+        }
+        return null
     }
 
     private fun scaleBitmap(src: Bitmap, maxDim: Int): Bitmap {
@@ -146,7 +200,7 @@ class PageDetectorAI(private val apiKeyManager: ApiKeyManager) {
 
     private fun bitmapToBase64(bitmap: Bitmap): String {
         val out = ByteArrayOutputStream()
-        bitmap.compress(Bitmap.CompressFormat.JPEG, 80, out)
+        bitmap.compress(Bitmap.CompressFormat.JPEG, 85, out)
         return Base64.encodeToString(out.toByteArray(), Base64.NO_WRAP)
     }
 
@@ -154,23 +208,30 @@ class PageDetectorAI(private val apiKeyManager: ApiKeyManager) {
         private const val TAG = "PageDetectorAI"
         private const val MODEL = "claude-haiku-4-5-20251001"
         private const val API_URL = "https://api.anthropic.com/v1/messages"
-        private const val MAX_SEND_DIM = 768
+        private const val MAX_SEND_DIM = 1024
 
-        private val PROMPT = """
-You are analyzing a camera image to find a book page or printed document.
+        private const val SYSTEM_PROMPT = """You are a precise computer vision assistant. Your only job is to locate the corners of a physical book page or printed document in camera images and return them as JSON coordinates. You always respond with valid JSON only — no explanations, no markdown."""
 
-Locate the physical paper page in the image — the full page including its white margins, not just the text area. The page may be at any angle.
+        private const val USER_PROMPT = """Find the physical book page (or printed document page) in this image.
 
-Respond with ONLY a JSON object, no other text.
+A book page is a rectangular piece of paper — usually white, cream, or light yellow — with printed text on it. The page has clear straight edges and may be at any angle.
 
-If a page is clearly visible:
+Rules:
+- Return the 4 corners of the FULL physical page including its white margins, not just the text area
+- If two pages are visible (open book), pick the single page that is most completely visible (larger visible area, fewer edges cut off)
+- The page corners should form a proper quadrilateral even if the page is tilted or slightly curved
+- If a page edge is at the image boundary, the corner coordinate should be at or very near 0.0 or 1.0
+
+Respond with ONLY a JSON object:
+
+If a page is visible:
 {"tl":[x,y],"tr":[x,y],"br":[x,y],"bl":[x,y]}
 
 If no page is visible:
 {"tl":null}
 
-Coordinates are fractions of image size: x is 0.0 (left edge) to 1.0 (right edge), y is 0.0 (top) to 1.0 (bottom).
-tl = top-left, tr = top-right, br = bottom-right, bl = bottom-left, listed clockwise.
-        """.trimIndent()
+x=0.0 is the left edge of the image, x=1.0 is the right edge.
+y=0.0 is the top of the image, y=1.0 is the bottom.
+tl=top-left corner, tr=top-right corner, br=bottom-right corner, bl=bottom-left corner."""
     }
 }
