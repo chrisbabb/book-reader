@@ -23,6 +23,7 @@ import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.TextRecognizer
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
 import kotlinx.coroutines.suspendCancellableCoroutine
+import java.lang.ref.WeakReference
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
@@ -32,7 +33,8 @@ class CameraManager(private val context: Context) {
     private var cameraProvider: ProcessCameraProvider? = null
 
     // Page detection
-    private var pageDetectionCallback: ((PageDetectionState) -> Unit)? = null
+    private var pageDetectionCallback: ((PageDetectionState, RectF?) -> Unit)? = null
+    private var previewViewRef: WeakReference<PreviewView>? = null
     private var isAnalyzing = false
     private var analysisEnabled = true
     private var lastAnalysisMs = 0L
@@ -44,9 +46,10 @@ class CameraManager(private val context: Context) {
     suspend fun startCamera(
         lifecycleOwner: LifecycleOwner,
         previewView: PreviewView,
-        onPageDetected: ((PageDetectionState) -> Unit)? = null
+        onPageDetected: ((PageDetectionState, RectF?) -> Unit)? = null
     ) {
         pageDetectionCallback = onPageDetected
+        previewViewRef = WeakReference(previewView)
 
         val provider = getCameraProvider()
         cameraProvider = provider
@@ -89,9 +92,8 @@ class CameraManager(private val context: Context) {
     fun setAnalysisEnabled(enabled: Boolean) {
         analysisEnabled = enabled
         if (enabled) {
-            // Reset so guidance resumes immediately
             lastAnalysisMs = 0L
-            pageDetectionCallback?.invoke(PageDetectionState.SEARCHING)
+            pageDetectionCallback?.invoke(PageDetectionState.SEARCHING, null)
         }
     }
 
@@ -110,7 +112,7 @@ class CameraManager(private val context: Context) {
                     try {
                         val bitmap = imageProxyToBitmap(image)
                         image.close()
-                        continuation.resume(bitmap)
+                        continuation.resumeWith(Result.success(bitmap))
                     } catch (e: Exception) {
                         image.close()
                         continuation.resumeWithException(e)
@@ -153,7 +155,6 @@ class CameraManager(private val context: Context) {
             return
         }
 
-        // Account for rotation: if 90° or 270°, width/height are swapped
         val rotation = image.imageInfo.rotationDegrees
         val imgW = if (rotation == 90 || rotation == 270) image.height else image.width
         val imgH = if (rotation == 90 || rotation == 270) image.width else image.height
@@ -161,11 +162,12 @@ class CameraManager(private val context: Context) {
         val inputImage = InputImage.fromMediaImage(mediaImage, rotation)
         analysisRecognizer.process(inputImage)
             .addOnSuccessListener { result ->
-                val state = evaluateDetection(result.textBlocks, imgW, imgH)
-                pageDetectionCallback?.invoke(state)
+                val (state, imageRect) = evaluateDetection(result.textBlocks, imgW, imgH)
+                val viewRect = imageRect?.let { imageRectToViewRect(it, imgW, imgH) }
+                pageDetectionCallback?.invoke(state, viewRect)
             }
             .addOnFailureListener {
-                pageDetectionCallback?.invoke(PageDetectionState.SEARCHING)
+                pageDetectionCallback?.invoke(PageDetectionState.SEARCHING, null)
             }
             .addOnCompleteListener {
                 image.close()
@@ -174,16 +176,14 @@ class CameraManager(private val context: Context) {
     }
 
     /**
-     * Determines detection state by checking whether recognized text blocks
-     * collectively fit within the central guide zone (86% of frame) and cover
-     * enough area to represent a full page of text.
+     * Returns the detection state and the bounding rect of all text blocks in image coordinates.
      */
     private fun evaluateDetection(
         blocks: List<com.google.mlkit.vision.text.Text.TextBlock>,
         imageWidth: Int,
         imageHeight: Int
-    ): PageDetectionState {
-        if (blocks.isEmpty()) return PageDetectionState.SEARCHING
+    ): Pair<PageDetectionState, RectF?> {
+        if (blocks.isEmpty()) return Pair(PageDetectionState.SEARCHING, null)
 
         val normalizedBounds = blocks.mapNotNull { block ->
             val b = block.boundingBox ?: return@mapNotNull null
@@ -194,30 +194,54 @@ class CameraManager(private val context: Context) {
                 b.bottom.toFloat() / imageHeight
             )
         }
-        if (normalizedBounds.isEmpty()) return PageDetectionState.SEARCHING
+        if (normalizedBounds.isEmpty()) return Pair(PageDetectionState.SEARCHING, null)
 
-        // Union bounding box of all text blocks
         val pageLeft   = normalizedBounds.minOf { it.left }
         val pageTop    = normalizedBounds.minOf { it.top }
         val pageRight  = normalizedBounds.maxOf { it.right }
         val pageBottom = normalizedBounds.maxOf { it.bottom }
 
-        // Guide zone: centre 86% of frame (7% padding on each side)
-        val gLeft = 0.07f; val gTop = 0.07f
-        val gRight = 0.93f; val gBottom = 0.93f
+        val pageArea = (pageRight - pageLeft) * (pageBottom - pageTop)
 
-        val allWithin = pageLeft >= gLeft && pageTop >= gTop &&
-                        pageRight <= gRight && pageBottom <= gBottom
+        if (pageArea < 0.04f) return Pair(PageDetectionState.SEARCHING, null)
 
-        val guideArea = (gRight - gLeft) * (gBottom - gTop)
-        val pageArea  = (pageRight - pageLeft) * (pageBottom - pageTop)
-        val coverage  = pageArea / guideArea
+        // Normalized rect in image space (0..1 on each axis)
+        val normalizedRect = RectF(pageLeft, pageTop, pageRight, pageBottom)
 
-        return when {
-            allWithin && coverage >= 0.30f -> PageDetectionState.ALIGNED
-            pageArea  >= 0.04f             -> PageDetectionState.PARTIAL
-            else                           -> PageDetectionState.SEARCHING
-        }
+        // Determine if fully within frame with small margin (7% on each side)
+        val margin = 0.07f
+        val fullyVisible = pageLeft >= margin && pageTop >= margin &&
+                           pageRight <= (1f - margin) && pageBottom <= (1f - margin)
+
+        val state = if (fullyVisible && pageArea >= 0.30f) PageDetectionState.ALIGNED
+                    else PageDetectionState.PARTIAL
+
+        return Pair(state, normalizedRect)
+    }
+
+    /**
+     * Converts a normalized rect (0..1 in image space) to pixel coordinates in the PreviewView,
+     * accounting for FILL_CENTER scaling.
+     */
+    private fun imageRectToViewRect(normalizedRect: RectF, imgW: Int, imgH: Int): RectF? {
+        val previewView = previewViewRef?.get() ?: return null
+        val viewW = previewView.width.toFloat()
+        val viewH = previewView.height.toFloat()
+        if (viewW == 0f || viewH == 0f) return null
+
+        // FILL_CENTER: scale so both dimensions fill, then center
+        val scale = maxOf(viewW / imgW, viewH / imgH)
+        val scaledW = imgW * scale
+        val scaledH = imgH * scale
+        val offsetX = (viewW - scaledW) / 2f
+        val offsetY = (viewH - scaledH) / 2f
+
+        return RectF(
+            offsetX + normalizedRect.left  * scaledW,
+            offsetY + normalizedRect.top   * scaledH,
+            offsetX + normalizedRect.right * scaledW,
+            offsetY + normalizedRect.bottom* scaledH
+        )
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────

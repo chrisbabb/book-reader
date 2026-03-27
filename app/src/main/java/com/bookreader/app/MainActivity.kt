@@ -69,7 +69,14 @@ class MainActivity : AppCompatActivity() {
         }
 
         viewModel.pageDetectionState.observe(this) { state ->
-            binding.pageDetectionOverlay.updateState(state)
+            binding.pageDetectionOverlay.updateDetection(state, viewModel.pageDetectionRect.value)
+        }
+
+        viewModel.pageDetectionRect.observe(this) { rect ->
+            binding.pageDetectionOverlay.updateDetection(
+                viewModel.pageDetectionState.value ?: com.bookreader.app.camera.PageDetectionState.SEARCHING,
+                rect
+            )
         }
 
         viewModel.canCapture.observe(this) { canCapture ->
