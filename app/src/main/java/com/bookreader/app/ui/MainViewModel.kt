@@ -13,12 +13,15 @@ import com.bookreader.app.ai.ApiKeyManager
 import com.bookreader.app.ai.ClaudeTextProcessor
 import com.bookreader.app.ai.NeuralTtsService
 import com.bookreader.app.camera.CameraManager
+import com.bookreader.app.camera.PageDetectionState
 import com.bookreader.app.ocr.OCRProcessor
 import com.bookreader.app.state.ReadingState
 import com.bookreader.app.state.ReadingStateManager
 import com.bookreader.app.state.ReadingStatus
 import com.bookreader.app.voice.VoiceCommand
 import com.bookreader.app.voice.VoiceCommandManager
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
@@ -43,6 +46,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val canCapture: LiveData<Boolean> = _canCapture
 
     private val _aiStatus = MutableLiveData("")
+
+    private val _pageDetectionState = MutableLiveData(PageDetectionState.SEARCHING)
+    val pageDetectionState: LiveData<PageDetectionState> = _pageDetectionState
     val aiStatus: LiveData<String> = _aiStatus
 
     // --- Core components ---
@@ -61,6 +67,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private var currentState = ReadingState(pageNumber = stateManager.pageNumber)
     private var isInitialized = false
+
+    // Page detection / auto-capture
+    private var autoCaptureJob: Job? = null
+    private var lastGuidanceMs = 0L
+    private val GUIDANCE_INTERVAL_MS = 5_000L
 
     fun initialize(lifecycleOwner: LifecycleOwner, previewView: PreviewView) {
         if (isInitialized) return
@@ -90,7 +101,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             onReady = {
                 viewModelScope.launch {
                     try {
-                        cameraManager.startCamera(lifecycleOwner, previewView)
+                        cameraManager.startCamera(lifecycleOwner, previewView) { state ->
+                            onPageDetectionUpdate(state)
+                        }
                         setupVoiceCommands()
 
                         val voiceIndicator = buildString {
@@ -141,10 +154,49 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         voiceManager?.startSession()
     }
 
+    private fun onPageDetectionUpdate(state: PageDetectionState) {
+        _pageDetectionState.postValue(state)
+        // Don't give guidance while the app is busy reading or capturing
+        if (_isReading.value == true || _canCapture.value == false) return
+
+        when (state) {
+            PageDetectionState.ALIGNED -> {
+                if (autoCaptureJob == null || !autoCaptureJob!!.isActive) {
+                    autoCaptureJob = viewModelScope.launch {
+                        ttsService?.announce("Page aligned. Capturing in 2 seconds.")
+                        delay(2_000)
+                        if (_pageDetectionState.value == PageDetectionState.ALIGNED &&
+                            _canCapture.value == true &&
+                            _isReading.value == false
+                        ) {
+                            captureAndReadPage()
+                        }
+                    }
+                }
+            }
+            else -> {
+                autoCaptureJob?.cancel()
+                autoCaptureJob = null
+                val now = System.currentTimeMillis()
+                if (now - lastGuidanceMs > GUIDANCE_INTERVAL_MS) {
+                    lastGuidanceMs = now
+                    val msg = if (state == PageDetectionState.PARTIAL)
+                        "Move closer or adjust angle to show the full page."
+                    else
+                        "Point the camera at a book page."
+                    ttsService?.announce(msg)
+                }
+            }
+        }
+    }
+
     fun captureAndReadPage() {
         if (_isReading.value == true) return
+        autoCaptureJob?.cancel()
+        autoCaptureJob = null
         viewModelScope.launch {
             try {
+                cameraManager.setAnalysisEnabled(false)
                 updateStatus(ReadingStatus.CAPTURING, "Capturing page…")
                 _canCapture.postValue(false)
 
@@ -204,6 +256,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 ttsService?.announce("There was an error processing the image. Please try again.")
                 _canCapture.postValue(true)
                 _isReading.postValue(false)
+                cameraManager.setAnalysisEnabled(true)
             }
         }
     }
@@ -233,6 +286,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _isPaused.postValue(false)
         _canCapture.postValue(true)
         updateStatus(ReadingStatus.IDLE, "Stopped. Tap Capture Page to read a new page.")
+        cameraManager.setAnalysisEnabled(true)
     }
 
     private fun handlePageDone() {
@@ -243,6 +297,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _isReading.postValue(false)
         _isPaused.postValue(false)
         _canCapture.postValue(true)
+        cameraManager.setAnalysisEnabled(true)
 
         stateManager.incrementPage()
         _pageNumber.postValue(stateManager.pageNumber)

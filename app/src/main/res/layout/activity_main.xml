@@ -17,6 +17,16 @@
         app:layout_constraintEnd_toEndOf="parent"
         app:scaleType="fillCenter" />
 
+    <!-- Page detection guide overlay — same bounds as the camera preview -->
+    <com.bookreader.app.camera.PageDetectionOverlay
+        android:id="@+id/pageDetectionOverlay"
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        app:layout_constraintTop_toTopOf="parent"
+        app:layout_constraintBottom_toTopOf="@id/controlPanel"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent" />
+
     <!-- Page number overlay top-left -->
     <TextView
         android:id="@+id/pageNumberText"

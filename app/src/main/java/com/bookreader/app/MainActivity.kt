@@ -11,6 +11,7 @@ import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import com.bookreader.app.UserPreferences
+import com.bookreader.app.camera.PageDetectionState
 import com.bookreader.app.databinding.ActivityMainBinding
 import com.bookreader.app.ui.MainViewModel
 class MainActivity : AppCompatActivity() {
@@ -64,6 +65,11 @@ class MainActivity : AppCompatActivity() {
         viewModel.isReading.observe(this) { reading ->
             binding.pauseResumeButton.isEnabled = reading
             binding.stopButton.isEnabled = reading
+            binding.pageDetectionOverlay.visibility = if (reading) View.GONE else View.VISIBLE
+        }
+
+        viewModel.pageDetectionState.observe(this) { state ->
+            binding.pageDetectionOverlay.updateState(state)
         }
 
         viewModel.canCapture.observe(this) { canCapture ->
