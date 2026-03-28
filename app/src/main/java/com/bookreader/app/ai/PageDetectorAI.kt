@@ -102,15 +102,13 @@ class PageDetectorAI(private val apiKeyManager: ApiKeyManager) {
                 .getString("text")
                 .trim()
 
-            Log.d(TAG, "Claude response: $text")
+            Log.d(TAG, "Claude raw response: $text")
 
-            // Extract the JSON object — handles markdown code fences and extra text
             val jsonStr = extractJson(text)
                 ?: return Pair(PageDetectionState.SEARCHING, null)
 
             val json = JSONObject(jsonStr)
 
-            // No page detected
             if (json.isNull("tl")) {
                 Log.d(TAG, "Claude: no page found")
                 return Pair(PageDetectionState.SEARCHING, null)
@@ -123,17 +121,38 @@ class PageDetectorAI(private val apiKeyManager: ApiKeyManager) {
                 } catch (e: Exception) { null }
             }
 
-            val tl = coord("tl") ?: return Pair(PageDetectionState.SEARCHING, null)
-            val tr = coord("tr") ?: return Pair(PageDetectionState.SEARCHING, null)
-            val br = coord("br") ?: return Pair(PageDetectionState.SEARCHING, null)
-            val bl = coord("bl") ?: return Pair(PageDetectionState.SEARCHING, null)
+            val pts = listOfNotNull(
+                coord("tl"), coord("tr"), coord("br"), coord("bl")
+            )
+            if (pts.size != 4) return Pair(PageDetectionState.SEARCHING, null)
 
-            val (tlx, tly) = tl
-            val (trx, try_) = tr
-            val (brx, bry) = br
-            val (blx, bly) = bl
+            // Detect if Claude returned pixel coordinates instead of 0..1 fractions.
+            // Any value > 1.5 is almost certainly a pixel value, not a fraction.
+            val maxVal = pts.flatMap { listOf(it.first, it.second) }.max()
+            if (maxVal > 1.5f) {
+                Log.w(TAG, "Claude returned pixel coordinates (max=$maxVal) — rejecting")
+                return Pair(PageDetectionState.SEARCHING, null)
+            }
 
-            // Clamp to valid range
+            // Geometrically sort the 4 corners into clockwise TL/TR/BR/BL order.
+            // This fixes self-intersecting "bow-tie" shapes when Claude labels corners wrong.
+            val sorted = sortCornersCW(pts)
+            val (tlx, tly) = sorted[0]
+            val (trx, try_) = sorted[1]
+            val (brx, bry) = sorted[2]
+            val (blx, bly) = sorted[3]
+
+            Log.d(TAG, "Sorted corners: TL($tlx,$tly) TR($trx,$try_) BR($brx,$bry) BL($blx,$bly)")
+
+            val xs = floatArrayOf(tlx, trx, brx, blx)
+            val ys = floatArrayOf(tly, try_, bry, bly)
+            val approxArea = (xs.max() - xs.min()) * (ys.max() - ys.min())
+
+            if (approxArea < 0.04f) {
+                Log.d(TAG, "Page too small (area=$approxArea), ignoring")
+                return Pair(PageDetectionState.SEARCHING, null)
+            }
+
             val corners = floatArrayOf(
                 tlx.coerceIn(0f, 1f), tly.coerceIn(0f, 1f),
                 trx.coerceIn(0f, 1f), try_.coerceIn(0f, 1f),
@@ -141,30 +160,29 @@ class PageDetectorAI(private val apiKeyManager: ApiKeyManager) {
                 blx.coerceIn(0f, 1f), bly.coerceIn(0f, 1f)
             )
 
-            val xs = floatArrayOf(tlx, trx, brx, blx)
-            val ys = floatArrayOf(tly, try_, bry, bly)
-            val approxArea = (xs.max() - xs.min()) * (ys.max() - ys.min())
-
-            Log.d(TAG, "Page corners: TL($tlx,$tly) TR($trx,$try_) BR($brx,$bry) BL($blx,$bly) area=$approxArea")
-
-            // Reject tiny detections (less than 4% of frame area)
-            if (approxArea < 0.04f) {
-                Log.d(TAG, "Page too small (area=$approxArea), ignoring")
-                return Pair(PageDetectionState.SEARCHING, null)
-            }
-
-            // ALIGNED = all corners well inside frame AND page covers enough area
             val edgeMargin = 0.04f
             val fullyVisible = xs.all { it in edgeMargin..(1f - edgeMargin) } &&
                                ys.all { it in edgeMargin..(1f - edgeMargin) }
             val state = if (fullyVisible && approxArea >= 0.20f) PageDetectionState.ALIGNED
                         else PageDetectionState.PARTIAL
 
+            Log.d(TAG, "State=$state area=$approxArea fullyVisible=$fullyVisible")
             Pair(state, corners)
         } catch (e: Exception) {
-            Log.w(TAG, "Parse error: ${e.message} body=$body")
+            Log.w(TAG, "Parse error: ${e.message}")
             Pair(PageDetectionState.SEARCHING, null)
         }
+    }
+
+    /**
+     * Sorts 4 (x,y) points into clockwise order: TL, TR, BR, BL.
+     * Works by splitting into top-2/bottom-2 by y value, then ordering by x within each pair.
+     */
+    private fun sortCornersCW(pts: List<Pair<Float, Float>>): List<Pair<Float, Float>> {
+        val byY = pts.sortedBy { it.second }
+        val top    = byY.take(2).sortedBy { it.first }   // lower y → top; left then right
+        val bottom = byY.drop(2).sortedBy { it.first }   // higher y → bottom; left then right
+        return listOf(top[0], top[1], bottom[1], bottom[0])  // TL, TR, BR, BL
     }
 
     /**
@@ -212,26 +230,26 @@ class PageDetectorAI(private val apiKeyManager: ApiKeyManager) {
 
         private const val SYSTEM_PROMPT = """You are a precise computer vision assistant. Your only job is to locate the corners of a physical book page or printed document in camera images and return them as JSON coordinates. You always respond with valid JSON only — no explanations, no markdown."""
 
-        private const val USER_PROMPT = """Find the physical book page (or printed document page) in this image.
+        private const val USER_PROMPT = """Find the physical book page in this image and return its 4 corner positions.
 
-A book page is a rectangular piece of paper — usually white, cream, or light yellow — with printed text on it. The page has clear straight edges and may be at any angle.
+A book page is a rectangular piece of paper (white, cream, or light yellow) with printed text. It has clear straight edges and may be held at any angle.
+
+CRITICAL: All coordinates MUST be decimal fractions between 0.0 and 1.0. Do NOT return pixel numbers.
+- 0.0 = left/top edge of the image
+- 1.0 = right/bottom edge of the image
+- 0.5 = exact center of the image
 
 Rules:
-- Return the 4 corners of the FULL physical page including its white margins, not just the text area
-- If two pages are visible (open book), pick the single page that is most completely visible (larger visible area, fewer edges cut off)
-- The page corners should form a proper quadrilateral even if the page is tilted or slightly curved
-- If a page edge is at the image boundary, the corner coordinate should be at or very near 0.0 or 1.0
+- Return corners of the ENTIRE physical page including white margins — not just the text
+- If two pages are visible (open book), choose the page that shows more of itself
+- Place corners at the actual paper edge, not the text edge
+- If a page corner is at or beyond the image edge, use 0.0 or 1.0
 
-Respond with ONLY a JSON object:
+Respond with ONLY a JSON object, nothing else:
 
-If a page is visible:
-{"tl":[x,y],"tr":[x,y],"br":[x,y],"bl":[x,y]}
+Page found: {"tl":[x,y],"tr":[x,y],"br":[x,y],"bl":[x,y]}
+No page:    {"tl":null}
 
-If no page is visible:
-{"tl":null}
-
-x=0.0 is the left edge of the image, x=1.0 is the right edge.
-y=0.0 is the top of the image, y=1.0 is the bottom.
-tl=top-left corner, tr=top-right corner, br=bottom-right corner, bl=bottom-left corner."""
+tl=top-left, tr=top-right, br=bottom-right, bl=bottom-left corner of the page."""
     }
 }
